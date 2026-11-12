@@ -202,8 +202,27 @@ function DisplayBottomTicker({ drinks, speed = 80 }) {
 }
 
 function Display({ drinks, priceHistories, tickerSettings }) {
-  const [selected, setSelected] = useState('NEGR');
-  const selectedDrink = drinks.find((drink) => drink.id === selected) || drinks[0];
+  const [selected, setSelected] = useState(null);
+  const rankedDrinks = useMemo(() => drinks
+    .map((drink, index) => ({ drink, index }))
+    .sort((left, right) => right.drink.change - left.drink.change || left.index - right.index)
+    .map(({ drink }) => drink), [drinks]);
+  const rankingKey = rankedDrinks.map((drink) => drink.id).join('|');
+  const selectedDrink = rankedDrinks.find((drink) => drink.id === selected) || rankedDrinks[0];
+
+  useEffect(() => {
+    if (rankedDrinks.length < 2) return undefined;
+    const rankedIds = rankedDrinks.map((drink) => drink.id);
+    const timer = setInterval(() => {
+      setSelected((current) => {
+        const currentIndex = rankedIds.indexOf(current);
+        const visibleIndex = currentIndex < 0 ? 0 : currentIndex;
+        return rankedIds[(visibleIndex + 1) % rankedIds.length];
+      });
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [rankingKey]);
+
   const selectedHistory = priceHistories[selectedDrink.id] || buildPriceHistory(selectedDrink);
   const positive = selectedDrink.change >= 0;
   const chartColor = positive ? '#00ed72' : '#ff3944';
@@ -216,12 +235,12 @@ function Display({ drinks, priceHistories, tickerSettings }) {
     <section className="market-terminal-board">
       <div className="market-instruments">
         <div className="market-table-header"><span>НАПИТОК</span><span>ЦЕНА</span><span>ИЗМЕНЕНИЕ (24Ч)</span><span>ГРАФИК (24Ч)</span></div>
-        <div className="market-table-body">{drinks.map((drink) => {
+        <div className="market-table-body">{rankedDrinks.map((drink) => {
           const rising = drink.change >= 0; const history = priceHistories[drink.id] || buildPriceHistory(drink);
           return <button className={`market-instrument-row ${selectedDrink.id === drink.id ? 'selected' : ''}`} key={drink.id} onClick={() => setSelected(drink.id)}><span className="market-instrument-name">{drink.name}</span><span className="market-instrument-price">{formatPrice(drink.price)}</span><span className={rising ? 'market-instrument-change positive' : 'market-instrument-change negative'}>{rising ? '▲' : '▼'} {rising ? '+' : '−'}{Math.abs(drink.change).toFixed(1)}%</span><MiniPriceChart history={history} positive={rising} id={drink.id} /></button>;
         })}</div>
       </div>
-      <article className="market-selected-detail">
+      <article className="market-selected-detail" key={selectedDrink.id}>
         <div className="selected-detail-heading"><h1>{selectedNameLead && <span>{selectedNameLead} </span>}<em>{selectedNameAccent}</em></h1><div className="selected-base-price"><span>БАЗОВАЯ ЦЕНА</span><b>{formatPrice(basePrice)}</b></div></div>
         <div className="selected-price-line"><strong>{formatPrice(selectedDrink.price)}</strong><span className={positive ? 'selected-change positive' : 'selected-change negative'}>{positive ? '▲' : '▼'} {positive ? '+' : '−'}{Math.abs(selectedDrink.change).toFixed(1)}%</span></div>
         <div className="market-detail-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={selectedHistory} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}><defs><linearGradient id="detailFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={chartColor} stopOpacity=".5" /><stop offset="100%" stopColor={chartColor} stopOpacity="0" /></linearGradient></defs><CartesianGrid stroke="#343434" vertical={true} /><XAxis dataKey="time" tick={{ fill: '#d4d4d4', fontSize: 12 }} axisLine={{ stroke: '#767676' }} tickLine={{ stroke: '#767676' }} /><YAxis domain={['auto', 'auto']} tick={{ fill: '#d4d4d4', fontSize: 12 }} tickFormatter={(value) => Math.round(value).toLocaleString('ru-RU')} axisLine={{ stroke: '#767676' }} tickLine={false} width={62} /><Tooltip formatter={(value) => [formatPrice(value), 'Цена']} contentStyle={{ background: '#050606', border: `1px solid ${chartColor}`, color: '#fff' }} /><Area type="monotone" dataKey="value" stroke={chartColor} fill="url(#detailFill)" strokeWidth={4} activeDot={{ r: 5, fill: chartColor }} /></AreaChart></ResponsiveContainer></div>
