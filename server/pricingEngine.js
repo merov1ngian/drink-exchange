@@ -70,6 +70,10 @@ export function setManualPrice(drinks, drinkId, price, rules = {}) {
     : drink);
 }
 
+export function resetPriceChanges(drinks) {
+  return drinks.map((drink) => ({ ...drink, change: 0 }));
+}
+
 function applyDemandBased(drinks, drinkId, quantity, rules) {
   const count = Math.max(1, Math.floor(Number(quantity) || 1));
   return drinks.map((drink) => {

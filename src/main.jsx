@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, ChevronDown, CircleHelp, Clock3, Flame, Maximize2, Menu, Radio, Search, Settings2, ShoppingBag, Wifi, X } from 'lucide-react';
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, ChevronDown, CircleHelp, Clock3, Flame, Maximize2, Menu, Radio, RotateCcw, Search, Settings2, ShoppingBag, Wifi, X } from 'lucide-react';
 import './styles.css';
+import { calculateBarPriceIndex } from './marketIndex.js';
 
 const chartData = [
   { time: '18:00', value: 64 }, { time: '18:15', value: 67 }, { time: '18:30', value: 66 }, { time: '18:45', value: 72 },
@@ -18,7 +19,7 @@ const seedDrinks = [
   { id: 'SAWA', symbol: 'SAWA', name: 'Совиньон Блан', category: 'Вино', price: 7000, change: 1.2, volume: 21, color: '#d4cf93' },
   { id: 'GIML', symbol: 'GIML', name: 'Гимлет', category: 'Классика', price: 8250, change: -0.8, volume: 13, color: '#91a46e' },
   { id: 'TONI', symbol: 'TONI', name: 'Тоник с лаймом', category: 'Безалкогольное', price: 4750, change: 0.6, volume: 8, color: '#9cb9a4' }
-];
+].map((drink) => ({ ...drink, basePrice: drink.price, rawPrice: drink.price, active: true }));
 const formatPrice = (value) => `${Math.round(Number(value)).toLocaleString('ru-RU')} ₸`;
 const defaultTickerSettings = { speed: 90, fontSize: 64, visibleDrinkIds: seedDrinks.map((drink) => drink.id) };
 const buildPriceHistory = (drink) => {
@@ -35,10 +36,10 @@ const buildPriceHistories = (drinks) => Object.fromEntries(drinks.map((drink) =>
 function useMarket() {
   const [drinks, setDrinks] = useState(seedDrinks);
   const [tickerSettings, setTickerSettings] = useState(defaultTickerSettings);
-  const [marketHistory, setMarketHistory] = useState(chartData);
+  const initialMarketHistory = useMemo(() => [{ time: 'База', value: 100 }], []);
+  const [marketHistory, setMarketHistory] = useState(initialMarketHistory);
   const [priceHistories, setPriceHistories] = useState(() => buildPriceHistories(seedDrinks));
-  const previousAverageRef = useRef(null);
-  const marketHistoryRef = useRef(chartData);
+  const marketHistoryRef = useRef(initialMarketHistory);
   const priceHistoriesRef = useRef(buildPriceHistories(seedDrinks));
   const [events, setEvents] = useState([
     { time: '20:36:12', buyer: 'Стол 12', drink: 'Негрони', quantity: 2, amount: 18500 },
@@ -47,6 +48,19 @@ function useMarket() {
     { time: '20:33:51', buyer: 'Стол 07', drink: 'Олд Фэшн', quantity: 1, amount: 19000 }
   ]);
   const socketRef = useRef(null);
+  const applyChartReset = (sourceDrinks, timestamp = Date.now()) => {
+    const currentValue = calculateBarPriceIndex(sourceDrinks);
+    const currentTime = new Date(timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const resetHistory = [{ time: 'Сброс', value: currentValue }, { time: currentTime, value: currentValue }];
+    const resetPriceHistories = Object.fromEntries(sourceDrinks.map((drink) => [drink.id, [
+      { time: 'Сброс', value: drink.price },
+      { time: currentTime, value: drink.price }
+    ]]));
+    marketHistoryRef.current = resetHistory;
+    priceHistoriesRef.current = resetPriceHistories;
+    setMarketHistory(resetHistory);
+    setPriceHistories(resetPriceHistories);
+  };
   useEffect(() => {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${protocol}://${location.hostname}:3001/ws`);
@@ -59,7 +73,10 @@ function useMarket() {
         const histories = buildPriceHistories(data.drinks);
         priceHistoriesRef.current = histories;
         setPriceHistories(histories);
-        previousAverageRef.current = data.drinks.reduce((sum, drink) => sum + Number(drink.rawPrice ?? drink.price), 0) / data.drinks.length;
+        const indexValue = calculateBarPriceIndex(data.drinks);
+        const snapshotHistory = [{ time: 'База', value: 100 }, { time: new Date(data.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }), value: indexValue }];
+        marketHistoryRef.current = snapshotHistory;
+        setMarketHistory(snapshotHistory);
       }
       if (data.type === 'market_update') {
         setDrinks(data.drinks);
@@ -71,11 +88,7 @@ function useMarket() {
         }));
         priceHistoriesRef.current = nextPriceHistories;
         setPriceHistories(nextPriceHistories);
-        const average = data.drinks.reduce((sum, drink) => sum + Number(drink.rawPrice ?? drink.price), 0) / data.drinks.length;
-        const previousAverage = previousAverageRef.current || average;
-        const previousValue = marketHistoryRef.current[marketHistoryRef.current.length - 1]?.value || 84.6;
-        const nextValue = Number((previousValue * (average / previousAverage)).toFixed(2));
-        previousAverageRef.current = average;
+        const nextValue = calculateBarPriceIndex(data.drinks);
         const nextHistory = [...marketHistoryRef.current.slice(-20), { time: new Date(data.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }), value: nextValue }];
         marketHistoryRef.current = nextHistory;
         setMarketHistory(nextHistory);
@@ -83,20 +96,28 @@ function useMarket() {
         if (drink) setEvents((current) => [{ time: new Date(data.trade.timestamp).toLocaleTimeString('ru-RU'), buyer: data.trade.buyer, drink: drink.name, quantity: data.trade.quantity, amount: data.trade.price }, ...current].slice(0, 8));
       }
       if (data.type === 'ticker_settings') setTickerSettings(data.tickerSettings);
+      if (data.type === 'charts_reset') {
+        if (data.drinks) setDrinks(data.drinks);
+        applyChartReset(data.drinks || seedDrinks, data.timestamp);
+      }
     };
     return () => socket.close();
   }, []);
   const simulate = (drinkId, quantity = 1) => socketRef.current?.send(JSON.stringify({ type: 'simulate', drinkId, quantity }));
   const setPrice = (drinkId, price) => socketRef.current?.send(JSON.stringify({ type: 'set_price', drinkId, price: Number(price) }));
   const updateTickerSettings = (settings) => socketRef.current?.send(JSON.stringify({ type: 'ticker_settings', settings }));
-  return { drinks, events, marketHistory, priceHistories, tickerSettings, simulate, setPrice, updateTickerSettings };
+  const resetChartHistories = () => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: 'reset_charts' }));
+    else applyChartReset(drinks);
+  };
+  return { drinks, events, marketHistory, priceHistories, tickerSettings, simulate, setPrice, updateTickerSettings, resetChartHistories };
 }
 
 function Header({ admin = false }) {
   const [time, setTime] = useState(new Date());
   useEffect(() => { const id = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(id); }, []);
   return <header className="topbar">
-    <div className="brand"><div className="brand-mark">◆</div><div><div className="brand-name">DRINK <span>EXCHANGE</span></div><div className="brand-sub">ЖИВАЯ АНАЛИТИКА РЫНКА</div></div></div>
+    <div className="brand"><div className="brand-mark">◆</div><div><div className="brand-name">DRINK <span>{admin ? 'EXCHANGE OFFICE' : 'EXCHANGE'}</span></div><div className="brand-sub">{admin ? 'УПРАВЛЕНИЕ РЕСТОРАНОМ' : 'ЖИВАЯ АНАЛИТИКА РЫНКА'}</div></div></div>
     <div className="market-state"><span className="pulse" /> <span>РЫНОК ОТКРЫТ</span><span className="state-divider" /><Clock3 size={14} /> <strong>{time.toLocaleTimeString('ru-RU')}</strong><span className="tz">GMT+5</span></div>
     {admin ? <div className="header-actions"><div className="user-chip">A <span>Администратор</span><ChevronDown size={14} /></div></div> : <div className="live-pill"><Wifi size={13} /> ОНЛАЙН</div>}
   </header>;
@@ -250,21 +271,24 @@ function Display({ drinks, priceHistories, tickerSettings }) {
   </main>;
 }
 
-function Admin({ drinks, events, simulate, setPrice, marketHistory, tickerSettings, updateTickerSettings }) {
+function Admin({ drinks, events, simulate, setPrice, marketHistory, tickerSettings, updateTickerSettings, resetChartHistories }) {
   const [tab, setTab] = useState('overview'); const [query, setQuery] = useState(''); const [sidebar, setSidebar] = useState(false); const [editingId, setEditingId] = useState(null); const [draftPrice, setDraftPrice] = useState('');
   const filtered = drinks.filter((drink) => `${drink.name} ${drink.symbol} ${drink.category}`.toLowerCase().includes(query.toLowerCase()));
+  const openTab = (nextTab) => { setTab(nextTab); setSidebar(false); };
   const beginEdit = (drink) => { setEditingId(drink.id); setDraftPrice(String(Math.round(drink.price))); };
   const savePrice = (drinkId) => { if (Number(draftPrice) > 0) setPrice(drinkId, draftPrice); setEditingId(null); };
+  const currentBarIndex = marketHistory[marketHistory.length - 1]?.value ?? calculateBarPriceIndex(drinks);
+  const barIndexChange = currentBarIndex - 100;
   const tabLabel = tab === 'overview' ? 'ОБЗОР' : tab === 'catalog' ? 'КАТАЛОГ' : 'БЕГУЩАЯ СТРОКА';
   const tabTitle = tab === 'overview' ? 'Добрый вечер, Алекс.' : tab === 'catalog' ? 'Каталог напитков' : 'Экран тикера';
   const tabDescription = tab === 'overview' ? 'Вот что сейчас происходит на вашем рынке.' : tab === 'catalog' ? 'Управляйте инструментами и симулируйте продажи.' : 'Настройте второй монитор без изменения логики цен.';
-  return <div className="admin-page"><Header admin /><aside className={sidebar ? 'sidebar open' : 'sidebar'}><div className="sidebar-title">ОПЕРАЦИИ</div><button className={tab === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setTab('overview')}><BarChart3 size={17} /> Обзор</button><button className={tab === 'catalog' ? 'nav-item active' : 'nav-item'} onClick={() => setTab('catalog')}><ShoppingBag size={17} /> Каталог напитков</button><button className="nav-item"><Bell size={17} /> Уведомления <span className="nav-badge">3</span></button><div className="sidebar-title second">СИСТЕМА</div><button className={tab === 'ticker' ? 'nav-item active' : 'nav-item'} onClick={() => setTab('ticker')}><Settings2 size={17} /> Бегущая строка</button><button className="nav-item"><CircleHelp size={17} /> Помощь</button><div className="sidebar-bottom"><div className="connection"><span className="pulse" /><div><b>Симулятор подключён</b><small>WebSocket · 42 мс</small></div></div><a href="/display" className="display-link"><Maximize2 size={15} /> Открыть табло</a></div></aside>{sidebar && <button className="sidebar-scrim" onClick={() => setSidebar(false)} aria-label="Закрыть навигацию" />}
+  return <div className="admin-page"><Header admin /><aside className={sidebar ? 'sidebar open' : 'sidebar'}><div className="sidebar-title">ОПЕРАЦИИ</div><button className={tab === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => openTab('overview')}><BarChart3 size={17} /> Обзор</button><button className={tab === 'catalog' ? 'nav-item active' : 'nav-item'} onClick={() => openTab('catalog')}><ShoppingBag size={17} /> Каталог напитков</button><button className="nav-item"><Bell size={17} /> Уведомления <span className="nav-badge">3</span></button><div className="sidebar-title second">СИСТЕМА</div><button className={tab === 'ticker' ? 'nav-item active' : 'nav-item'} onClick={() => openTab('ticker')}><Settings2 size={17} /> Бегущая строка</button><button className="nav-item"><CircleHelp size={17} /> Помощь</button><div className="sidebar-bottom"><div className="connection"><span className="pulse" /><div><b>Симулятор подключён</b><small>WebSocket · 42 мс</small></div></div><a href="/display" className="display-link"><Maximize2 size={15} /> Открыть табло</a></div></aside>{sidebar && <button className="sidebar-scrim" onClick={() => setSidebar(false)} aria-label="Закрыть навигацию" />}
     <main className="admin-main">
       <div className="admin-mobilebar"><button onClick={() => setSidebar(true)}><Menu /></button><span>ОПЕРАЦИИ</span></div>
       <div className="admin-heading"><div><span className="eyebrow">ПУЛЬТ УПРАВЛЕНИЯ / {tabLabel}</span><h1>{tabTitle}</h1><p>{tabDescription}</p></div><div className="date-chip"><Clock3 size={15} /> Среда, 12 ноября 2026</div></div>
       {tab === 'overview' ? <>
-        <div className="kpi-grid"><div className="kpi-card"><span>ИНДЕКС БАРА</span><b>{marketHistory[marketHistory.length - 1]?.value.toFixed(1) || '84.6'}</b><Change value={2.84} /><small>текущее значение</small></div><div className="kpi-card"><span>ВАЛОВАЯ ВЫРУЧКА</span><b>3 842 000 ₸</b><Change value={8.6} /><small>сегодня · 186 сделок</small></div><div className="kpi-card"><span>СРЕДНЯЯ ЦЕНА</span><b>{formatPrice(drinks.reduce((sum, drink) => sum + drink.price, 0) / drinks.length)}</b><Change value={1.2} /><small>по 8 инструментам</small></div><div className="kpi-card"><span>АКТИВНЫЕ АЛЕРТЫ</span><b className="alert-number">03</b><span className="alert-tag">НУЖНА ПРОВЕРКА</span><small>2 цены · 1 остаток</small></div></div>
-        <div className="admin-grid"><div className="panel admin-chart"><div className="panel-heading"><div><span className="eyebrow">ДИНАМИКА</span><h2>Активность рынка</h2></div><div className="range-tabs"><button className="selected">3Ч</button><button>6Ч</button><button>1Д</button></div></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={marketHistory}><defs><linearGradient id="adminFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#67d69a" stopOpacity=".28" /><stop offset="100%" stopColor="#67d69a" stopOpacity="0" /></linearGradient></defs><CartesianGrid stroke="#253039" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="time" tick={{ fill: '#73808a', fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis domain={['auto', 'auto']} tick={{ fill: '#73808a', fontSize: 10 }} axisLine={false} tickLine={false} width={30} /><Area type="monotone" dataKey="value" stroke="#67d69a" fill="url(#adminFill)" strokeWidth={2} /></AreaChart></ResponsiveContainer></div></div>
+        <div className="kpi-grid"><div className="kpi-card"><span>ИНДЕКС ЦЕН БАРА · BMI</span><b>{currentBarIndex.toFixed(2)}</b><Change value={barIndexChange} /><small>база 100 · не прибыль</small></div><div className="kpi-card"><span>ВАЛОВАЯ ВЫРУЧКА</span><b>3 842 000 ₸</b><Change value={8.6} /><small>сегодня · 186 сделок</small></div><div className="kpi-card"><span>СРЕДНЯЯ ЦЕНА</span><b>{formatPrice(drinks.reduce((sum, drink) => sum + drink.price, 0) / drinks.length)}</b><Change value={1.2} /><small>по 8 инструментам</small></div><div className="kpi-card"><span>АКТИВНЫЕ АЛЕРТЫ</span><b className="alert-number">03</b><span className="alert-tag">НУЖНА ПРОВЕРКА</span><small>2 цены · 1 остаток</small></div></div>
+        <div className="admin-grid"><div className="panel admin-chart"><div className="panel-heading"><div><span className="eyebrow">ДИНАМИКА BMI</span><h2>Индекс цен бара</h2></div><div className="chart-actions"><div className="range-tabs"><button className="selected">3Ч</button><button>6Ч</button><button>1Д</button></div><button className="reset-chart-button" onClick={resetChartHistories} title="Очистить графики и обнулить проценты изменения всех напитков"><RotateCcw size={13} /> Сбросить графики и %</button></div></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={marketHistory}><defs><linearGradient id="adminFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d8a756" stopOpacity=".34" /><stop offset="100%" stopColor="#d8a756" stopOpacity="0" /></linearGradient></defs><CartesianGrid stroke="#2b2d2d" strokeDasharray="3 4" vertical={false} /><XAxis dataKey="time" tick={{ fill: '#858b8d', fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis domain={['auto', 'auto']} tick={{ fill: '#858b8d', fontSize: 10 }} axisLine={false} tickLine={false} width={42} /><Area type="monotone" dataKey="value" stroke="#d8a756" fill="url(#adminFill)" strokeWidth={2.5} /></AreaChart></ResponsiveContainer></div></div>
         <div className="panel simulator-panel"><div className="panel-heading"><div><span className="eyebrow">ДЕМО-ИНСТРУМЕНТ</span><h2>Симулировать продажу</h2></div><Activity size={18} /></div><p>Запустите сделку и увидьте изменение цены в реальном времени.</p><label>ВЫБЕРИТЕ НАПИТОК<select id="sim-drink">{drinks.map((drink) => <option key={drink.id} value={drink.id}>{drink.name} · {formatPrice(drink.price)}</option>)}</select></label><label>КОЛИЧЕСТВО<div className="quantity"><button>-</button><b>1</b><button>+</button></div></label><button className="simulate-button" onClick={() => simulate(document.getElementById('sim-drink').value, 1)}><Flame size={16} /> Провести тестовую продажу</button></div></div>
         <div className="panel table-panel"><div className="table-heading"><div><span className="eyebrow">ИНСТРУМЕНТЫ</span><h2>Рынок напитков</h2></div><div className="table-actions"><div className="search"><Search size={15} /><input placeholder="Поиск напитка" value={query} onChange={(e) => setQuery(e.target.value)} /></div><button className="filter-button">Все категории <ChevronDown size={14} /></button></div></div><div className="drink-table"><div className="table-row table-header"><span>ИНСТРУМЕНТ</span><span>ТЕКУЩАЯ ЦЕНА</span><span>ИЗМЕНЕНИЕ</span><span>ОБЪЁМ</span><span>СТАТУС</span></div>{filtered.map((drink) => <div className="table-row" key={drink.id}><span className="instrument"><i style={{ background: drink.color }} /> <b>{drink.name}</b><small>{drink.symbol}</small></span><span>{formatPrice(drink.price)}</span><Change value={drink.change} /><span>{drink.volume}</span><span className="status"><i /> Торгуется</span></div>)}</div></div>
       </> : tab === 'catalog' ? <div className="panel table-panel catalog-panel"><div className="table-heading"><div><span className="eyebrow">КАТАЛОГ</span><h2>Инструменты</h2></div><div className="search"><Search size={15} /><input placeholder="Поиск напитка" value={query} onChange={(e) => setQuery(e.target.value)} /></div></div><div className="drink-table">{filtered.map((drink) => <div className="table-row" key={drink.id}><span className="instrument"><i style={{ background: drink.color }} /> <b>{drink.name}</b><small>{drink.symbol} · {drink.category}</small></span><span>{formatPrice(drink.price)}</span><Change value={drink.change} />{editingId === drink.id ? <span className="price-editor"><input type="number" min="3000" step="50" value={draftPrice} onChange={(e) => setDraftPrice(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && savePrice(drink.id)} /><button className="mini-trade save-price" onClick={() => savePrice(drink.id)}>Сохранить</button></span> : <span className="catalog-actions"><button className="mini-trade" onClick={() => beginEdit(drink)}>Изменить цену</button><button className="mini-trade test-sale" onClick={() => simulate(drink.id, 1)}>Тестовая продажа</button></span>}</div>)}</div></div> : <TickerSettingsPanel drinks={drinks} tickerSettings={tickerSettings} updateTickerSettings={updateTickerSettings} />}
