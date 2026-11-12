@@ -78,10 +78,14 @@ function processManualPriceUpdate(drinkId, price) {
   return update;
 }
 
-setInterval(() => {
-  const drink = drinks[Math.floor(Math.random() * drinks.length)];
-  processPurchase(drink.id, 1, ['Стол 12', 'Гость', 'Стол 07', 'Бар'][Math.floor(Math.random() * 4)]);
-}, 5500);
+const simulatorEnabled = process.env.SIMULATOR_ENABLED !== 'false';
+const simulatorInterval = Math.max(1000, Number(process.env.SIMULATOR_INTERVAL_MS) || 5500);
+if (simulatorEnabled) {
+  setInterval(() => {
+    const drink = drinks[Math.floor(Math.random() * drinks.length)];
+    processPurchase(drink.id, 1, ['Стол 12', 'Гость', 'Стол 07', 'Бар'][Math.floor(Math.random() * 4)]);
+  }, simulatorInterval);
+}
 
 wss.on('connection', (socket) => {
   socket.send(JSON.stringify(snapshot()));
@@ -95,11 +99,13 @@ wss.on('connection', (socket) => {
       if (body.type === 'set_price') processManualPriceUpdate(body.drinkId, body.price);
       if (body.type === 'ticker_settings') processTickerSettings(body.settings);
       if (body.type === 'reset_charts') processChartsReset();
+      if (body.type === 'heartbeat') socket.send(JSON.stringify({ type: 'heartbeat_ack', timestamp: Date.now() }));
     } catch { /* ignore malformed simulator input */ }
   });
 });
 
 app.use(express.json());
+app.get('/api/health', (_req, res) => res.json({ ok: true, marketOpen: true, clients: wss.clients.size, timestamp: Date.now() }));
 app.get('/api/market', (_req, res) => res.json(snapshot()));
 app.post('/api/simulate', (req, res) => {
   const drinkId = drinks.some((item) => item.id === req.body.drinkId) ? req.body.drinkId : drinks[0].id;
@@ -123,4 +129,4 @@ app.use(express.static(dist));
 app.use((_req, res) => res.sendFile(path.join(dist, 'index.html')));
 
 const port = process.env.PORT || 3001;
-httpServer.listen(port, () => console.log(`Drink Exchange server listening on ${port}`));
+httpServer.listen(port, '0.0.0.0', () => console.log(`Drink Exchange server listening on ${port}`));

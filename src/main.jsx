@@ -63,9 +63,15 @@ function useMarket() {
   };
   useEffect(() => {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${protocol}://${location.hostname}:3001/ws`);
-    socketRef.current = socket;
-    socket.onmessage = (message) => {
+    const websocketHost = import.meta.env.DEV ? `${location.hostname}:3001` : location.host;
+    const websocketUrl = import.meta.env.VITE_WS_URL || `${protocol}://${websocketHost}/ws`;
+    let socket;
+    let reconnectTimer;
+    let heartbeatTimer;
+    let reconnectAttempt = 0;
+    let stopped = false;
+
+    const handleMessage = (message) => {
       const data = JSON.parse(message.data);
       if (data.type === 'snapshot') {
         setDrinks(data.drinks);
@@ -101,7 +107,37 @@ function useMarket() {
         applyChartReset(data.drinks || seedDrinks, data.timestamp);
       }
     };
-    return () => socket.close();
+
+    const connect = () => {
+      socket = new WebSocket(websocketUrl);
+      socketRef.current = socket;
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'heartbeat' }));
+        }, 25000);
+      };
+      socket.onmessage = handleMessage;
+      socket.onerror = () => socket.close();
+      socket.onclose = () => {
+        clearInterval(heartbeatTimer);
+        if (socketRef.current === socket) socketRef.current = null;
+        if (!stopped) {
+          const delay = Math.min(1000 * (2 ** reconnectAttempt), 30000);
+          reconnectAttempt += 1;
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      stopped = true;
+      clearTimeout(reconnectTimer);
+      clearInterval(heartbeatTimer);
+      socket?.close();
+    };
   }, []);
   const simulate = (drinkId, quantity = 1) => socketRef.current?.send(JSON.stringify({ type: 'simulate', drinkId, quantity }));
   const setPrice = (drinkId, price) => socketRef.current?.send(JSON.stringify({ type: 'set_price', drinkId, price: Number(price) }));
