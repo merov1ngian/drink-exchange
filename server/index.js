@@ -23,9 +23,27 @@ let drinks = [
 ].map((drink) => normalizeDrink({ ...drink, active: true, minPrice: 3000, maxPrice: 30000, roundingStep: 50 }, { mode: 'purchaseImpact' }));
 
 const pricingRules = { mode: 'purchaseImpact', purchaseIncrease: 0.03, otherDrinkDecrease: 0.005 };
+let tickerSettings = {
+  speed: 90,
+  fontSize: 64,
+  visibleDrinkIds: drinks.map((drink) => drink.id)
+};
 
 function snapshot(type = 'snapshot', trade = undefined) {
-  return { type, drinks: drinks.map((drink) => ({ ...drink })), marketOpen: true, timestamp: Date.now(), ...(trade ? { trade } : {}) };
+  return { type, drinks: drinks.map((drink) => ({ ...drink })), tickerSettings: { ...tickerSettings, visibleDrinkIds: [...tickerSettings.visibleDrinkIds] }, marketOpen: true, timestamp: Date.now(), ...(trade ? { trade } : {}) };
+}
+
+function processTickerSettings(next = {}) {
+  const validIds = new Set(drinks.filter((drink) => drink.active !== false).map((drink) => drink.id));
+  const requestedIds = Array.isArray(next.visibleDrinkIds) ? next.visibleDrinkIds.filter((id) => validIds.has(id)) : tickerSettings.visibleDrinkIds;
+  tickerSettings = {
+    speed: Math.min(240, Math.max(20, Number(next.speed ?? tickerSettings.speed) || tickerSettings.speed)),
+    fontSize: Math.min(140, Math.max(24, Number(next.fontSize ?? tickerSettings.fontSize) || tickerSettings.fontSize)),
+    visibleDrinkIds: requestedIds.length ? [...new Set(requestedIds)] : tickerSettings.visibleDrinkIds
+  };
+  const update = { type: 'ticker_settings', tickerSettings: { ...tickerSettings, visibleDrinkIds: [...tickerSettings.visibleDrinkIds] }, timestamp: Date.now() };
+  broadcastMarketUpdate(wss.clients, update);
+  return update;
 }
 
 function processPurchase(drinkId, quantity = 1, buyer = 'Симулятор') {
@@ -68,6 +86,7 @@ wss.on('connection', (socket) => {
         processPurchase(drinkId, body.quantity, 'Симулятор');
       }
       if (body.type === 'set_price') processManualPriceUpdate(body.drinkId, body.price);
+      if (body.type === 'ticker_settings') processTickerSettings(body.settings);
     } catch { /* ignore malformed simulator input */ }
   });
 });
@@ -88,6 +107,7 @@ app.put('/api/catalog/:drinkId/price', (req, res) => {
     res.status(400).json({ ok: false, error: error.message });
   }
 });
+app.put('/api/ticker-settings', (req, res) => res.json({ ok: true, ...processTickerSettings(req.body) }));
 
 const dist = path.resolve(__dirname, '../dist');
 app.use(express.static(dist));
