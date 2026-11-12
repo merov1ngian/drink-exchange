@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applySale, normalizeDrink, setManualPrice } from './pricingEngine.js';
+import { applySale, normalizeDrink, resetPriceChanges, setManualPrice } from './pricingEngine.js';
 import { broadcastMarketUpdate } from './websocket.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,7 +20,7 @@ let drinks = [
   { id: 'SAWA', symbol: 'SAWA', name: 'Совиньон Блан', category: 'Вино', price: 7000, change: 1.2, volume: 21, color: '#d4cf93' },
   { id: 'GIML', symbol: 'GIML', name: 'Гимлет', category: 'Классика', price: 8250, change: -0.8, volume: 13, color: '#91a46e' },
   { id: 'TONI', symbol: 'TONI', name: 'Тоник с лаймом', category: 'Безалкогольное', price: 4750, change: 0.6, volume: 8, color: '#9cb9a4' }
-].map((drink) => normalizeDrink({ ...drink, active: true, minPrice: 3000, maxPrice: 30000, roundingStep: 50 }, { mode: 'purchaseImpact' }));
+].map((drink) => normalizeDrink({ ...drink, basePrice: drink.price, active: true, minPrice: 3000, maxPrice: 30000, roundingStep: 50 }, { mode: 'purchaseImpact' }));
 
 const pricingRules = { mode: 'purchaseImpact', purchaseIncrease: 0.03, otherDrinkDecrease: 0.005 };
 let tickerSettings = {
@@ -42,6 +42,13 @@ function processTickerSettings(next = {}) {
     visibleDrinkIds: requestedIds.length ? [...new Set(requestedIds)] : tickerSettings.visibleDrinkIds
   };
   const update = { type: 'ticker_settings', tickerSettings: { ...tickerSettings, visibleDrinkIds: [...tickerSettings.visibleDrinkIds] }, timestamp: Date.now() };
+  broadcastMarketUpdate(wss.clients, update);
+  return update;
+}
+
+function processChartsReset() {
+  drinks = resetPriceChanges(drinks);
+  const update = { type: 'charts_reset', drinks: drinks.map((drink) => ({ ...drink })), timestamp: Date.now() };
   broadcastMarketUpdate(wss.clients, update);
   return update;
 }
@@ -87,6 +94,7 @@ wss.on('connection', (socket) => {
       }
       if (body.type === 'set_price') processManualPriceUpdate(body.drinkId, body.price);
       if (body.type === 'ticker_settings') processTickerSettings(body.settings);
+      if (body.type === 'reset_charts') processChartsReset();
     } catch { /* ignore malformed simulator input */ }
   });
 });
@@ -108,6 +116,7 @@ app.put('/api/catalog/:drinkId/price', (req, res) => {
   }
 });
 app.put('/api/ticker-settings', (req, res) => res.json({ ok: true, ...processTickerSettings(req.body) }));
+app.post('/api/reset-charts', (_req, res) => res.json({ ok: true, ...processChartsReset() }));
 
 const dist = path.resolve(__dirname, '../dist');
 app.use(express.static(dist));

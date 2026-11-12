@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySale, normalizeDrink } from './pricingEngine.js';
+import { applySale, normalizeDrink, resetPriceChanges } from './pricingEngine.js';
 import { broadcastMarketUpdate } from './websocket.js';
 
 const baseDrinks = [
@@ -37,6 +37,13 @@ test('price never goes below minPrice or above maxPrice', () => {
   const raised = applySale(lowered, 'HIGH', 10, { mode: 'purchaseImpact' });
   assert.equal(raised.find((drink) => drink.id === 'HIGH').rawPrice, 20);
   assert.ok(raised.every((drink) => drink.rawPrice >= drink.minPrice && drink.rawPrice <= drink.maxPrice));
+});
+
+test('chart reset clears percentages without changing prices', () => {
+  const changed = baseDrinks.map((drink, index) => ({ ...drink, rawPrice: drink.price + index * 0.25, change: index + 1 }));
+  const reset = resetPriceChanges(changed);
+  assert.ok(reset.every((drink) => drink.change === 0));
+  assert.deepEqual(reset.map(({ price, rawPrice }) => ({ price, rawPrice })), changed.map(({ price, rawPrice }) => ({ price, rawPrice })));
 });
 
 test('all websocket clients receive the same full market state', () => {
