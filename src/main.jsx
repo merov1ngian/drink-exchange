@@ -20,12 +20,24 @@ const seedDrinks = [
   { id: 'TONI', symbol: 'TONI', name: 'Тоник с лаймом', category: 'Безалкогольное', price: 4750, change: 0.6, volume: 8, color: '#9cb9a4' }
 ];
 const formatPrice = (value) => `${Math.round(Number(value)).toLocaleString('ru-RU')} ₸`;
+const buildPriceHistory = (drink) => {
+  const sessionStart = drink.price / (1 + drink.change / 100);
+  return chartData.map((point, index) => {
+    const progress = index / (chartData.length - 1);
+    const trend = sessionStart + (drink.price - sessionStart) * progress;
+    const noise = (point.value - 76) * drink.price * 0.00035 * Math.sin(progress * Math.PI);
+    return { time: point.time, value: Math.round(index === chartData.length - 1 ? drink.price : trend + noise) };
+  });
+};
+const buildPriceHistories = (drinks) => Object.fromEntries(drinks.map((drink) => [drink.id, buildPriceHistory(drink)]));
 
 function useMarket() {
   const [drinks, setDrinks] = useState(seedDrinks);
   const [marketHistory, setMarketHistory] = useState(chartData);
+  const [priceHistories, setPriceHistories] = useState(() => buildPriceHistories(seedDrinks));
   const previousAverageRef = useRef(null);
   const marketHistoryRef = useRef(chartData);
+  const priceHistoriesRef = useRef(buildPriceHistories(seedDrinks));
   const [events, setEvents] = useState([
     { time: '20:36:12', buyer: 'Стол 12', drink: 'Негрони', quantity: 2, amount: 18500 },
     { time: '20:35:48', buyer: 'Бар', drink: 'Острая Маргарита', quantity: 1, amount: 8000 },
@@ -41,10 +53,20 @@ function useMarket() {
       const data = JSON.parse(message.data);
       if (data.type === 'snapshot') {
         setDrinks(data.drinks);
+        const histories = buildPriceHistories(data.drinks);
+        priceHistoriesRef.current = histories;
+        setPriceHistories(histories);
         previousAverageRef.current = data.drinks.reduce((sum, drink) => sum + Number(drink.rawPrice ?? drink.price), 0) / data.drinks.length;
       }
       if (data.type === 'market_update') {
         setDrinks(data.drinks);
+        const pointTime = new Date(data.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        const nextPriceHistories = Object.fromEntries(data.drinks.map((drink) => {
+          const current = priceHistoriesRef.current[drink.id] || buildPriceHistory(drink);
+          return [drink.id, [...current.slice(-20), { time: pointTime, value: drink.price }]];
+        }));
+        priceHistoriesRef.current = nextPriceHistories;
+        setPriceHistories(nextPriceHistories);
         const average = data.drinks.reduce((sum, drink) => sum + Number(drink.rawPrice ?? drink.price), 0) / data.drinks.length;
         const previousAverage = previousAverageRef.current || average;
         const previousValue = marketHistoryRef.current[marketHistoryRef.current.length - 1]?.value || 84.6;
@@ -61,7 +83,7 @@ function useMarket() {
   }, []);
   const simulate = (drinkId, quantity = 1) => socketRef.current?.send(JSON.stringify({ type: 'simulate', drinkId, quantity }));
   const setPrice = (drinkId, price) => socketRef.current?.send(JSON.stringify({ type: 'set_price', drinkId, price: Number(price) }));
-  return { drinks, events, marketHistory, simulate, setPrice };
+  return { drinks, events, marketHistory, priceHistories, simulate, setPrice };
 }
 
 function Header({ admin = false }) {
@@ -78,19 +100,20 @@ function Change({ value }) { return <span className={value >= 0 ? 'change up' : 
 
 function Sparkline({ positive = true }) { return <svg className="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline fill="none" stroke={positive ? '#66d69a' : '#e46d70'} strokeWidth="2" points={positive ? '0,25 12,22 23,24 34,15 46,18 58,10 68,13 79,6 90,9 100,2' : '0,6 12,9 23,8 34,15 46,12 58,18 68,14 79,22 90,18 100,27'} /></svg>; }
 
-function Display({ drinks, events, marketHistory }) {
+function Display({ drinks, events, priceHistories }) {
   const [selected, setSelected] = useState('NEGR');
   const selectedDrink = drinks.find((drink) => drink.id === selected) || drinks[0];
   const sorted = useMemo(() => [...drinks].sort((a, b) => b.change - a.change), [drinks]);
-  const latestIndex = marketHistory[marketHistory.length - 1]?.value ?? 84.6;
-  const previousIndex = marketHistory[marketHistory.length - 2]?.value ?? latestIndex;
-  const indexChange = previousIndex ? ((latestIndex / previousIndex) - 1) * 100 : 0;
-  const chartIsUp = latestIndex >= previousIndex;
+  const selectedHistory = priceHistories[selectedDrink.id] || buildPriceHistory(selectedDrink);
+  const latestPrice = selectedHistory[selectedHistory.length - 1]?.value ?? selectedDrink.price;
+  const previousPrice = selectedHistory[selectedHistory.length - 2]?.value ?? latestPrice;
+  const chartChange = previousPrice ? ((latestPrice / previousPrice) - 1) * 100 : 0;
+  const chartIsUp = latestPrice >= previousPrice;
   const chartColor = chartIsUp ? '#66d69a' : '#e46d70';
   return <div className="display-page"><Header /><div className="display-content">
     <section className="display-hero"><div><div className="eyebrow"><Activity size={14} /> ЖИВОЕ ТАБЛО <span>•</span> СЕССИЯ 06</div><h1>Ночь<br /><em>движется.</em></h1><p>Цены меняются вместе с залом. Успейте взять любимый напиток, пока он в топе.</p></div><div className="hero-stats"><div><span>ОБЪЁМ СЕССИИ</span><b>186</b><small>НАПИТКОВ ПРОДАНО</small></div><div><span>ИНДЕКС БАРА</span><b className="gold">+2.84%</b><small>К ОТКРЫТИЮ</small></div></div></section>
     <div className="ticker-strip">{sorted.slice(0, 6).map((drink) => <button className={`ticker ${selected === drink.id ? 'active' : ''}`} key={drink.id} onClick={() => setSelected(drink.id)}><span className="ticker-symbol">{drink.symbol}</span><strong>{formatPrice(drink.price)}</strong><Change value={drink.change} /></button>)}</div>
-    <section className="market-grid"><div className="panel chart-panel"><div className="panel-heading"><div><span className="eyebrow">ДИНАМИКА РЫНКА</span><h2>Индекс бара</h2></div><div className="chart-value"><b>{latestIndex.toFixed(1)}</b><Change value={indexChange} /></div></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={marketHistory}><defs><linearGradient id="marketFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={chartColor} stopOpacity=".32" /><stop offset="100%" stopColor={chartColor} stopOpacity="0" /></linearGradient></defs><CartesianGrid stroke="#283035" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="time" tick={{ fill: '#778188', fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis domain={['auto', 'auto']} tick={{ fill: '#778188', fontSize: 10 }} axisLine={false} tickLine={false} width={30} /><Tooltip contentStyle={{ background: '#111619', border: '1px solid #374047', borderRadius: 4, color: '#f5f2ea' }} /><Area type="monotone" dataKey="value" stroke={chartColor} fill="url(#marketFill)" strokeWidth={2} /></AreaChart></ResponsiveContainer></div><div className="chart-caption"><span><i className={`dot ${chartIsUp ? 'gold-dot' : 'red-dot'}`} /> СВОДНОЕ ДВИЖЕНИЕ ЦЕН И СПРОСА</span><span>ПОСЛЕДНИЕ 3 ЧАСА</span></div></div>
+    <section className="market-grid"><div className="panel chart-panel"><div className="panel-heading"><div><span className="eyebrow">ДИНАМИКА ЦЕНЫ · {selectedDrink.symbol}</span><h2>{selectedDrink.name}</h2></div><div className="chart-value"><b>{formatPrice(latestPrice)}</b><Change value={chartChange} /></div></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={selectedHistory}><defs><linearGradient id="marketFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={chartColor} stopOpacity=".32" /><stop offset="100%" stopColor={chartColor} stopOpacity="0" /></linearGradient></defs><CartesianGrid stroke="#283035" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="time" tick={{ fill: '#778188', fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis domain={['auto', 'auto']} tick={{ fill: '#778188', fontSize: 10 }} tickFormatter={(value) => `${Math.round(value / 100) / 10}k`} axisLine={false} tickLine={false} width={42} /><Tooltip formatter={(value) => [formatPrice(value), 'Цена']} contentStyle={{ background: '#111619', border: '1px solid #374047', borderRadius: 4, color: '#f5f2ea' }} /><Area type="monotone" dataKey="value" stroke={chartColor} fill="url(#marketFill)" strokeWidth={2} activeDot={{ r: 4, fill: chartColor }} /></AreaChart></ResponsiveContainer></div><div className="chart-caption"><span><i className={`dot ${chartIsUp ? 'gold-dot' : 'red-dot'}`} /> ИСТОРИЯ ЦЕНЫ · {selectedDrink.symbol}</span><span>ПОСЛЕДНИЕ 3 ЧАСА</span></div></div>
       <div className="panel spotlight-panel"><div className="panel-heading"><div><span className="eyebrow">СЕЙЧАС В ТОРГАХ</span><h2>Лидеры движения</h2></div><Flame className="flame" size={20} /></div><div className="mover-list">{sorted.slice(0, 5).map((drink, index) => <button className={`mover-row ${selected === drink.id ? 'selected' : ''}`} key={drink.id} onClick={() => setSelected(drink.id)}><span className="rank">0{index + 1}</span><span className="mover-name"><b>{drink.name}</b><small>{drink.symbol} · {drink.category.toUpperCase()}</small></span><Sparkline positive={drink.change >= 0} /><span className="mover-price">{formatPrice(drink.price)}<Change value={drink.change} /></span></button>)}</div><div className="panel-foot"><span>Нажмите на напиток для деталей</span><Maximize2 size={14} /></div></div>
     </section>
     <section className="lower-grid"><div className="panel order-panel"><div className="panel-heading"><div><span className="eyebrow">ВЫБРАННЫЙ НАПИТОК</span><h2>{selectedDrink.name} <span className="instrument-symbol">{selectedDrink.symbol}</span></h2></div><div className="big-price">{formatPrice(selectedDrink.price)}<Change value={selectedDrink.change} /></div></div><div className="price-line"><span className="price-label">ПОСЛЕДНЯЯ СДЕЛКА</span><span>{formatPrice(selectedDrink.price)}</span><span className="price-label">МАКС. ЗА СЕССИЮ</span><span>{formatPrice(selectedDrink.price * 1.08)}</span><span className="price-label">ОБЪЁМ</span><span>{selectedDrink.volume}</span></div></div><div className="panel tape-panel"><div className="panel-heading"><div><span className="eyebrow">ЛЕНТА СДЕЛОК</span><h2>Последние сделки</h2></div><Radio size={17} className="radio-icon" /></div><div className="tape-list">{events.slice(0, 4).map((event, i) => <div className="tape-row" key={`${event.time}-${i}`}><span>{event.time}</span><b>{event.drink}</b><span>{event.quantity}x</span><strong>{formatPrice(event.amount)}</strong></div>)}</div></div></section>
